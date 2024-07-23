@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -54,23 +55,24 @@ class GaussianPolicy(Policy, nn.Module):
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         # self.network = GaussianNetwork(obs_dim, action_dim, action_bounds, hidden_sizes)
-        self.network = MLP(obs_dim, (hidden_sizes,), hidden_sizes, output_activation=nn.ReLU())
-        self.mu = nn.Linear(in_features=hidden_sizes, out_features=action_dim)
-        self.log_std = nn.Linear(in_features=hidden_sizes, out_features=action_dim)
+        # self.network = MLP(obs_dim, (hidden_sizes,), hidden_sizes, output_activation=nn.ReLU())
+        # self.mu = nn.Linear(in_features=hidden_sizes, out_features=action_dim)
+        # self.log_std = nn.Linear(in_features=hidden_sizes, out_features=action_dim)
+        self.network = MLP(obs_dim, (hidden_sizes, hidden_sizes), 2 * action_dim)
         self.action_bounds = action_bounds
 
-    # def forward(self, observation):
-    #     output = self.network(observation)
-    #     mean, log_std = output[..., :self.action_dim], output[..., self.action_dim:]
-    #     std = log_std.clamp(min=-20, max=2).exp()
-    #     return Normal(mean, std)
-
     def forward(self, observation):
-        x = self.network(observation)
-        mu = self.mu(x)
-        log_std = self.log_std(x)
+        output = self.network(observation)
+        mean, log_std = output[..., :self.action_dim], output[..., self.action_dim:]
         std = log_std.clamp(min=-20, max=2).exp()
-        return Normal(mu, std)
+        return Normal(mean, std)
+
+    # def forward(self, observation):
+    #     x = self.network(observation)
+    #     mu = self.mu(x)
+    #     log_std = self.log_std(x)
+    #     std = log_std.clamp(min=-20, max=2).exp()
+    #     return Normal(mu, std)
 
     def get_action(self, observation):
         dist = self(observation)
@@ -82,10 +84,9 @@ class GaussianPolicy(Policy, nn.Module):
 
     def sample_or_likelihood(self, observation):
         dist = self(observation)
-        u = dist.rsample()
-        log_prob = dist.log_prob(value=u)
-        # if self.action_bounds is not None:
-        action = torch.tanh(u)
-        # action = self.action_bounds[0] + (action + 1.) * 0.5 * (self.action_bounds[1] - self.action_bounds[0])
-        # log_prob -= torch.log(1 - action ** 2 + 1e-6)
-        return (action * self.action_bounds[1]).clamp_(self.action_bounds[0], self.action_bounds[1]), log_prob.sum(-1, keepdim=True)
+        pi_action = dist.rsample()
+        logp_pi = dist.log_prob(pi_action).sum(dim=-1)
+        logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(dim=1)
+        pi_action = F.tanh(pi_action)
+        pi_action = self.action_bounds[0] + (pi_action + 1.) * 0.5 * (self.action_bounds[1] - self.action_bounds[0])
+        return pi_action, logp_pi.unsqueeze(-1)
